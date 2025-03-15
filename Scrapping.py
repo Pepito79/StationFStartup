@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import json
 import os
 import pydantic_ai
@@ -12,46 +12,57 @@ from googlesearch import search
 from dotenv import load_dotenv
 import time
 import ListeStartup
+import re
+import listeLiens
 
 
 load_dotenv()
 api=os.getenv('GOOGLE_GEMINI_KEY')
 gemini='gemini-1.5-flash'
 
-listeStartup = ListeStartup.liste  
-
-"""Trouver le site de chaque stratup pour donner le contenu au llm"""
-
-# Ouvrir le fichier pour écrire les liens
-with open("liste_links.txt", "a") as file:
-    for startup in listeStartup:
-        q = search(startup, num_results=1)  # Effectuer une recherche avec le nom de la startup
-        i = 0
-        for lien in q:
-            file.write(lien + "\n") 
-            print(f"Lien n°{i} écrit")
-            i += 1
-
-print("Les liens ont été écrits dans le fichier liste_links.txt")
 
 """Creation des classes demandées à l'agent IA"""
 class ResultatParLien(BaseModel):
-    Objectif: str = Field(..., description="Résume l'objectif de la startup")
-    Probleme: str = Field(...,description="Identifie le problème auquel la startup répond")
-    Secteur : str = Field(...,description="Quelle est le secteur visé par la startup")
-
+    Nom: str = Field(..., description="Nom de la startup")
+    Objectif: str = Field(..., description="Description détaillée en français de la mission et de la valeur ajoutée de la startup , il faut au moins 5 lignes claires et précises.")
+    Probleme: str = Field(..., description="Problème traité en français, son importance et ses conséquences sur le marché")
+    Secteur: str = Field(..., description="Secteur d'activité de la startup")
 class ResulatFinal(BaseModel):
-    Resultat: List[ResultatParLien] = Field(...,"Le resultat final qui est le ResultatParLien de chaque lien")
+    Resultat: List[ResultatParLien] = Field(...,description="Le resultat final qui est le ResultatParLien de chaque lien")
     
 webAgent = Agent(
     gemini,
     result_type= ResulatFinal,
-    system_prompt=(
-    'effecte une recherche pour chaque startup présent dans la liste qui va t être ','donnée par l utilisateur.' , 'Il faudra que tu utilises l outil {WebSearcher}' ,
-    'pour chaque stratup ')
+    system_prompt = (
+    "Analyse lien par lien (il faut parcourir tous les liens dans la liste {listeLiens.listeLiens}}) dans la liste ournie par l'utilisateur. Pour chaque lien dans la liste qui correspondant à une startup, "
+    "utilise l'outil {webAgent} afin de comprendre son objectif, son domaine d'activité et sa mission, le tout en français.","Tu traiteras tous les liens de la liste et impérativement ." ,
+    "Si tu ne comprend pas la première fois un lien tu devra reanalysé le contenu qui te sera retourné par l'outil {visite_lien} jusqu'à ce que tu comprennes."
+)
 )
 
-@WebSearcher.tool_plain
-def RechercheStartup( nom_startup : str):
-    for j in search(nom_startup, num=1):
-        
+
+@webAgent.tool_plain
+def visiter_lien(lien: str):
+    """Un lien est donné en arg le but est de scrappe les données du lien et en extraire le texte """
+    response = requests.get(lien)
+    soup= BeautifulSoup(response.text,'html.parser')
+    for script_or_style in soup(['script', 'style']):
+        script_or_style.decompose()
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+    final= soup.prettify()
+    return md(final)
+
+def main():
+    resultat= webAgent.run_sync(f"{listeLiens.listeLiens}").data
+    res_dict=resultat.model_dump()
+    with open("Description","a") as file:
+        for i, dico in enumerate(res_dict['Resultat']):
+            file.write(f"### 🚀 Startup {i}: {dico["Nom"]} \n\n")
+            file.write(f"Objectif de la startup: \n {dico['Objectif']}\n\n")
+            file.write(f"**📌 Problème:** \n {dico['Probleme']}\n\n")
+            file.write(f"**🏢 Secteur:** \n {dico['Secteur']}\n\n")
+            print(f" Stratup n°{i} analysée")
+
+if __name__ == "__main__":
+    main()
